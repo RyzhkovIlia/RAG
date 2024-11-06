@@ -162,3 +162,5 @@ cython_debug/
 #.idea/
 
 volumes/milvus/etcd/member/
+volumes/milvus/etcd/member/snap/db
+volumes/milvus/etcd/member/wal/0000000000000000-0000000000000000.wal
