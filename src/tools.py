@@ -1,13 +1,19 @@
-import re
-from tqdm import tqdm
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-from langchain.text_splitter import SentenceTransformersTokenTextSplitter
+import pickle
+from sentence_transformers import SentenceTransformer
+from langchain.embeddings.base import Embeddings
 from pypdf import PdfReader
-import chromadb
-import umap.umap_ as umap
-from typing import List, Dict, Any
-import numpy as np
-from chromadb.api.types import Documents, Embeddings, EmbeddingFunction
+from typing import List
+import re
+from langchain.text_splitter import SentenceTransformersTokenTextSplitter
+from langchain_milvus.retrievers import MilvusCollectionHybridSearchRetriever
+from langchain_milvus.utils.sparse import BM25SparseEmbedding
+from pymilvus import (
+    Collection,
+    WeightedRanker
+)
+import google.generativeai as genai
+import os
+
 
 def load_pdf_file(file_path: str) -> str:
     """
@@ -37,7 +43,7 @@ def split_text_to_token(text: str) -> List[str]:
     Returns:
     - List[str]: A list of text chunks, each within the token limit.
     """
-    split_text = re.split('\. ', text)
+    split_text = re.split('\\. ', text)
     token_splitter = SentenceTransformersTokenTextSplitter(chunk_overlap=0, tokens_per_chunk=256)
     token_split_texts = []
     for text in [i for i in split_text if i != ""]:
@@ -45,88 +51,68 @@ def split_text_to_token(text: str) -> List[str]:
 
     return token_split_texts
 
+class SentenceTransformerEmbeddings(Embeddings):
+    def __init__(self, model_name:str="all-MiniLM-L6-v2"):
+        self.model = SentenceTransformer(model_name)
 
-def create_chroma_database(documents: List[str], name: str, embedding_function: SentenceTransformerEmbeddingFunction, path: str) -> chromadb.Collection:
-    """
-    Creates a Chroma database collection with the given documents.
+    def embed_documents(self, documents):
+        return self.model.encode(documents)
 
-    Parameters:
-    - documents (List[str]): List of documents to be added to the database.
-    - name (str): Name of the collection.
-    - embedding_function: Function used to generate embeddings for the documents.
+    def embed_query(self, query):
+        return self.model.encode([query])[0]
+    def save(self, path:str):
+        self.model.save(path)
+    
 
-    Returns:
-    - chromadb.Collection: The created Chroma Collection instance.
-    """
-    chroma_client = chromadb.PersistentClient(path=path)
-    database = chroma_client.create_collection(name=name, embedding_function=embedding_function)
-    ids = [str(i) for i in range(len(documents))]
-    database.add(ids=ids, documents=documents)
+def save_params_for_retriever(
+    collection: Collection, 
+    dense_field: str,
+    sparse_field: str,
+    dense_embedding_func: SentenceTransformerEmbeddings,
+    sparse_embedding_func: BM25SparseEmbedding
+    ) -> None:
+    dense_embedding_func.save(f'src/embed_models/dense_embedding_model_{collection.name}')
+    config = {
+        'colection_name': collection.name,
+        'dense_field': dense_field,
+        'sparse_field': sparse_field,
+        'sparse_embedding_func': sparse_embedding_func
+    }
 
-    return database
-
-
-def load_chroma_database(name: str, embedding_function: SentenceTransformerEmbeddingFunction, path: str) -> chromadb.Collection: 
-    """
-    Loads an existing Chroma collection by name.
-
-    Parameters:
-    - name (str): Name of the collection to be loaded.
-    - embedding_function: Embedding function for generating document embeddings.
-
-    Returns:
-    - chromadb.Collection: The loaded Chroma Collection instance.
-    """
-    chroma_client = chromadb.PersistentClient(path=path)
-    database = chroma_client.get_collection(name=name, embedding_function=embedding_function)
-
-    return database 
+    with open(f"src/configs/config_params_{collection.name}.pkl", "wb") as f:
+        pickle.dump(config, f)
 
 
-def project_embeddings(embeddings: List[np.ndarray], umap_transform:umap) -> np.ndarray:
-    """
-    Projects embeddings to a lower-dimensional space using UMAP.
+def get_hybrid_function(
+        text_field: str, 
+        name_of_collection: str,
+        k: int=5, 
+        metric: str='IP'
+    ) -> MilvusCollectionHybridSearchRetriever:
 
-    Parameters:
-    - embeddings (List[np.ndarray]): List of embeddings to be projected.
-    - umap_transform: A fitted UMAP model for dimensionality reduction.
+    with open(f'src/configs/config_params_{name_of_collection}.pkl', "rb") as f:
+        config = pickle.load(f)
+    model = SentenceTransformerEmbeddings(f'src/embed_models/dense_embedding_model_{name_of_collection}')
+    sparse_search_params = {"metric_type": metric}
+    dense_search_params = {"metric_type": metric, "params": {}}
+    retriever = MilvusCollectionHybridSearchRetriever(
+        collection = Collection(name_of_collection),
+        rerank=WeightedRanker(0.5, 0.5),
+        anns_fields=[config['dense_field'], config['sparse_field']],
+        field_embeddings=[model, config['sparse_embedding_func']],
+        field_search_params=[dense_search_params, sparse_search_params],
+        top_k=k,
+        text_field=text_field,
+        nprobe=20
+    )
 
-    Returns:
-    - np.ndarray: A 2D array of transformed embeddings.
-    """
-    umap_embeddings = np.empty((len(embeddings), 2))
-    for i, embedding in enumerate(tqdm(embeddings)): 
-        umap_embeddings[i] = umap_transform.transform([embedding])
+    return retriever
 
-    return umap_embeddings 
+def get_gpt_model() -> genai.GenerativeModel:
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_api_key:
+        raise ValueError("Gemini API Key not provided. Please provide GEMINI_API_KEY as an environment variable")
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel('gemini-pro')
 
-
-class SentenceTransformerEmbeddingFunction(EmbeddingFunction[Documents]):
-    # Since we do dynamic imports we have to type this as Any
-    models: Dict[str, Any] = {}
-
-    # If you have a beefier machine, try "gtr-t5-large".
-    # for a full list of options: https://huggingface.co/sentence-transformers, https://www.sbert.net/docs/pretrained_models.html
-    def __init__(
-        self,
-        model_name: str = "all-MiniLM-L6-v2",
-        device: str = "cpu",
-        normalize_embeddings: bool = False,
-    ):
-        if model_name not in self.models:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError:
-                raise ValueError(
-                    "The sentence_transformers python package is not installed. Please install it with `pip install sentence_transformers`"
-                )
-            self.models[model_name] = SentenceTransformer(model_name, device=device)
-        self._model = self.models[model_name]
-        self._normalize_embeddings = normalize_embeddings
-
-    def __call__(self, input: Documents) -> Embeddings:
-        return self._model.encode(  # type: ignore
-            list(input),
-            convert_to_numpy=True,
-            normalize_embeddings=self._normalize_embeddings,
-        ).tolist()
+    return model
