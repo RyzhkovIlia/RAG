@@ -1,3 +1,5 @@
+import re
+
 from pymilvus import (
     Collection,
     CollectionSchema,
@@ -5,21 +7,24 @@ from pymilvus import (
     FieldSchema,
     connections
 )
+
+from langchain_milvus.utils.sparse import BM25SparseEmbedding
+
 from src.tools import (
     load_pdf_file,
     split_text_to_token,
     SentenceTransformerEmbeddings,
     save_params_for_retriever
 )
-from langchain_milvus.utils.sparse import BM25SparseEmbedding
 
+# connect to Milvus
 CONNECTION_URI = "http://localhost:19530"
 connections.connect(uri=CONNECTION_URI)
 
-# Название новой коллекции
-name_of_collection = 'Pushkin'
+# Name of the new collection
+name_of_collection = 'Tresis'
 
-# Создаем схему новой коллекции
+# Creating a scheme for a new collection
 pk_field = "doc_id"
 dense_field = "dense_vector"
 sparse_field = "sparse_vector"
@@ -37,30 +42,43 @@ fields = [
     FieldSchema(name=text_field, dtype=DataType.VARCHAR, max_length=65_535),
 ]
 
-# Инициализируем новую коллекцию 
+# Initialize a new collection  
 schema = CollectionSchema(fields=fields, enable_dynamic_field=False)
 collection = Collection(
     name=name_of_collection, schema=schema, consistency_level="Strong"
 )
 
-# Добавляем индексы в новую коллекцию
+# Add indexes to a new collection
 dense_index = {"index_type": "FLAT", "metric_type": "IP"}
 collection.create_index("dense_vector", dense_index)
 sparse_index = {"index_type": "SPARSE_INVERTED_INDEX", "metric_type": "IP"}
 collection.create_index("sparse_vector", sparse_index)
 collection.flush()
 
-# Получаем текст из PDF файла
-pdf_text = load_pdf_file(file_path='dataset/skazka_o_rubake_i_rubke.pdf')
-chunked_text = split_text_to_token(text=pdf_text)
+# Getting text from PDF file
+pdf_text = load_pdf_file(file_path='dataset/example.pdf', start_page=13, end_page=158)
 
-# Инициализируем два типа Эмбеддинга
+# Text processing
+pdf_text = [p.replace('\n', ' ').strip() for p in pdf_text if (not re.search(r'© Springer International Publishing Switzerland 2014', p.replace('\n', ' ').strip())) and (not p.replace('\n', ' ').strip().isdigit())]
+pdf_text_2 = []
+for i in pdf_text:
+    if i.split(' ')[0].istitle() or i.split(' ')[0] == '•':
+        pdf_text_2.append(i)
+    else:
+        pdf_text_2[-1]+=i
+chunked_text = split_text_to_token(text_split=pdf_text_2)
+chunked_text_2 = []
+for i in chunked_text:
+    if not len(i.strip())<5:
+        chunked_text_2.append(i.strip())
+
+# Initialize two types of Embedding
 dense_embedding_func = SentenceTransformerEmbeddings()
 sparse_embedding_func = BM25SparseEmbedding(corpus=chunked_text)
 
-# Добавляем текст в коллекцию и сохраняем
+# Add the text to the collection and save it
 entities = []
-for text in chunked_text:
+for text in chunked_text_2:
     entity = {
         dense_field: dense_embedding_func.embed_documents([text])[0],
         sparse_field: sparse_embedding_func.embed_documents([text])[0],
@@ -70,7 +88,7 @@ for text in chunked_text:
 collection.insert(entities)
 collection.load()
 
-# Сохраняем все параметры коллекции
+# Save all collection settings
 save_params_for_retriever(
     collection=collection, 
     dense_field=dense_field, 
