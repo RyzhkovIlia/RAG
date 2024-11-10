@@ -122,6 +122,11 @@ celerybeat.pid
 *.sage.py
 
 volumes/
+user.yaml
+static/
+=3.9.1
+embedEtcd.yaml
+standalone_embed.sh
 
 # Environments
 .env
