@@ -1,8 +1,18 @@
+import subprocess
+
+command = "bash standalone_embed.sh start"
+result = subprocess.run(command, shell=True, capture_output=True, text=True, executable="/bin/bash")
+
+if result.returncode == 0:
+    print("Command output:\n", result.stdout)
+else:
+    print("Error:\n", result.stderr)
+
 from flask import Flask, request, render_template_string
 import google.generativeai as genai
 
 from langchain_milvus.retrievers import MilvusCollectionHybridSearchRetriever
-from get_answer import generate_answer_promt
+from get_answer import generate_answer_prompt
 from src.tools import get_hybrid_function, get_gpt_model
 
 # Loading the GPT and Milvus model
@@ -23,7 +33,7 @@ html_template = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Text Processor</title>
+    <title>RAG System</title>
 </head>
 <body>
     <h1>What do you want to know?:</h1>
@@ -46,7 +56,7 @@ def process_text(
         retriever:MilvusCollectionHybridSearchRetriever, 
         model:genai.GenerativeModel
     ) -> str:
-    answer = generate_answer_promt(query=text, retriever=retriever, model=model)
+    answer = generate_answer_prompt(query=text, retriever=retriever, model=model)
 
     return answer
 

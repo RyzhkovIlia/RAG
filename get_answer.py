@@ -1,8 +1,6 @@
 import google.generativeai as genai
 from langchain_milvus.retrievers import MilvusCollectionHybridSearchRetriever
-from pymilvus import (
-    connections
-)
+from pymilvus import connections
 
 # connect to Milvus
 CONNECTION_URI = "http://localhost:19530"
@@ -49,7 +47,7 @@ def make_rag_prompt(
     return prompt
 
 # Getting a response from the GPT model
-def generate_answer_promt(
+def generate_answer_prompt(
         query:str, 
         retriever:MilvusCollectionHybridSearchRetriever, 
         model:genai.GenerativeModel
